@@ -1,6 +1,12 @@
-use std::{env, fs::File, io::Read, os::unix::prelude::FileExt};
+use std::{
+    env,
+    fs::File,
+    io::{Read},
+};
 
-fn main() -> io::Result<()> {
+use quickfs::CLUSTER_SIZE_L16TB;
+
+fn main() {
     // take in command line args
     let args: Vec<String> = env::args().collect();
     // if no args specified, print usage
@@ -22,27 +28,27 @@ fn main() -> io::Result<()> {
     // let qfs_file = std::fs::read_to_string(qfs_file).expect("couldn't read qfs_file");
 
     // open the file
-    let mut f = File::open(qfs_file)?;
+    let mut f = File::open(qfs_file).unwrap();
 
+    // HEADER == boot sector
     const HEADER_OFFSET: usize = 0;
-    const HEADER_SIZE: usize = 1000;
+    // assume less than 16TB
+    const HEADER_SIZE: usize = CLUSTER_SIZE_L16TB as usize;
 
     // read the header to string
     let mut header_raw = [0 as u8; HEADER_SIZE];
     f.read_exact(&mut header_raw);
 
     // load qfs_file (the headers) into memory
-    let headers = read_headers(&header_raw);
+    // let headers = read_headers(&header_raw);
 
     // given headers, read inode table to get the list of files
     // and build the filesystem hierarchy into an enum FSTree
-    let inodes = read_inodes(&headers, &f);
+    // let inodes = read_inodes(&headers, &f);
 
     // by walking through its hierarchy, mapping each file's name (like an ls -R)
-    let res = walk_fs(inodes);
+    // let res = walk_fs(inodes);
 
     // print (ls -R /)
-    print_fs(res);
-
-    Ok(())
+    // print_fs(res);
 }

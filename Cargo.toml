@@ -4,3 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+neutronapi = { git = "https://github.com/hyperswine/neutronapi", features = [
+    "types",
+    "interface",
+] }
+read_exact = "0.0.1"
