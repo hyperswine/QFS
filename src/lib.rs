@@ -128,7 +128,7 @@ impl Default for Header {
     /// Not recommended
     fn default() -> Self {
         Self {
-            fs_name: Default::default(),
+            fs_name: FS_NAME,
             partition_offset: Default::default(),
             vol_length: Default::default(),
             fat_offset: Default::default(),
@@ -286,7 +286,7 @@ impl FATEntry {
 // API
 // ------------
 
-fn to_bytes<T: Encode>(t: &T) -> Vec<u8> {
+pub fn to_bytes<T: Encode>(t: &T) -> Vec<u8> {
     let res = bincode::encode_to_vec(
         t,
         config::standard()
@@ -301,14 +301,14 @@ fn to_bytes<T: Encode>(t: &T) -> Vec<u8> {
     }
 }
 
-fn bytes_to_str(bytes: &Vec<u8>) -> String {
+pub fn bytes_to_str(bytes: &Vec<u8>) -> String {
     let res = core::str::from_utf8(bytes).unwrap_or("Error: couldnt convert bytes into a String");
 
     String::from(res)
 }
 
 // Decode function, make sure QuickFS signature exists
-fn bytes_to_type<T: Decode>(bytes: &[u8]) -> Option<T> {
+pub fn bytes_to_type<T: Decode>(bytes: &[u8]) -> Option<T> {
     let res: Result<(T, usize), DecodeError> = decode_from_slice(
         bytes,
         config::standard()

@@ -1,10 +1,5 @@
-use std::{
-    env,
-    fs::File,
-    io::{Read},
-};
-
-use quickfs::CLUSTER_SIZE_L16TB;
+use quickfs::{bytes_to_str, bytes_to_type, to_bytes, Header, CLUSTER_SIZE_L16TB};
+use std::{env, fs::File, io::Read};
 
 fn main() {
     // take in command line args
@@ -52,3 +47,34 @@ fn main() {
     // print (ls -R /)
     // print_fs(res);
 }
+
+fn write_to_file(header: Header, filepath: &str) -> Result<&'static str, &'static str> {
+    // serialise into bytes
+    let res = to_bytes(&header);
+
+    // write bytes to file
+    match std::fs::write(filepath, res) {
+        Ok(f) => Ok("successfully wrote data"),
+        Err(e) => Err("could not write data"),
+    }
+}
+
+#[test]
+fn test_write_then_read() {
+    // write
+    let header = Header::default();
+    let res = write_to_file(header, "out");
+    assert!(res.is_ok());
+
+    // read
+    let res = std::fs::read("out").expect("Unable to read out");
+    let res: Option<Header> = bytes_to_type(&res);
+    assert!(res.is_some());
+
+    // print
+    let res = res.unwrap();
+    println!("res = {:?}", res);
+}
+
+// the file will be treated as a byte file
+fn read_bytes_from_file(filepath: &str) {}
