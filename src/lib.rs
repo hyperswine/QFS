@@ -22,7 +22,7 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
-use bincode::{config, Decode, Encode};
+use bincode::{config, decode_from_slice, error::DecodeError, Decode, Encode};
 use neutronapi::KTimestamp;
 
 use serde::{Deserialize, Serialize};
@@ -292,7 +292,7 @@ fn to_bytes<T: Encode>(t: &T) -> Vec<u8> {
         config::standard()
             .with_little_endian()
             .write_fixed_array_length()
-            .with_fixed_int_encoding(),
+            .with_variable_int_encoding(),
     );
 
     match res {
@@ -305,6 +305,22 @@ fn bytes_to_str(bytes: &Vec<u8>) -> String {
     let res = core::str::from_utf8(bytes).unwrap_or("Error: couldnt convert bytes into a String");
 
     String::from(res)
+}
+
+// Decode function, make sure QuickFS signature exists
+fn bytes_to_type<T: Decode>(bytes: &[u8]) -> Option<T> {
+    let res: Result<(T, usize), DecodeError> = decode_from_slice(
+        bytes,
+        config::standard()
+            .with_little_endian()
+            .write_fixed_array_length()
+            .with_variable_int_encoding(),
+    );
+
+    match res {
+        Ok(r) => Some(r.0),
+        Err(_) => None,
+    }
 }
 
 /// Type must implement FromStr!
@@ -323,67 +339,6 @@ macro_rules! retrieve_or_propagate {
     };
 }
 
-impl FromStr for Header {
-    type Err = ();
-
-    // just interpret the thing as int or str
-    // and assume its in the right format
-
-    /// Takes in a raw string of size Header. Attempts to parse the first sector size of the string
-    /// And return a BootSector struct
-    /// For use in memory
-    fn from_str(raw_string: &str) -> Result<Self, Self::Err> {
-        // debug: log the items
-
-        // the header portion
-        if raw_string.len() != mem::size_of::<Header>() {
-            return Err(());
-        }
-
-        let fs_name = &raw_string[0..6];
-        if fs_name != "QuickFS" {
-            return Err(());
-        }
-
-        // 8 Bytes -> 7 8 9 10 11 12 13 14 (basically 7 + 8 since end is exclusive)
-        // MANUAL WAY
-        // let partition_offset = retrieve_or_propagate!(&raw_string[7..15], u64);
-
-        /*
-        Header::new(
-            partition_offset,
-            vol_length,
-            fat_offset,
-            fat_length,
-            cluster_heap_offset,
-            cluster_count,
-            first_cluster_of_root_dir,
-            bytes_per_sector_shift,
-            sectors_per_cluster_shift,
-            redundant_fat,
-            percent_in_use,
-            is_boot_partition,
-        )
-        */
-
-        let mut header: Header = unsafe { mem::zeroed() };
-
-        let header_size = mem::size_of::<Header>();
-
-        // cast raw string to bytes
-        let mut raw_string = raw_string.as_bytes();
-
-        unsafe {
-            let header_slice =
-                slice::from_raw_parts_mut(&mut header as *mut _ as *mut u8, header_size);
-            // `read_exact()` comes from `std::Read` impl for `&[u8]`. Have to use another implementation
-            read_exact::ReadExactExt::read_exact_or_eof(&mut raw_string, header_slice).unwrap();
-        }
-
-        Ok(header)
-    }
-}
-
 // JUST USE FROMSTR
 
 fn read_inodes() {}
@@ -400,10 +355,11 @@ fn print_fs() {}
 fn test_str_to_struct() {
     // bad input
     // NOTE: convert to str
+    // Basically, just read from a file into a &[u8] instead and pass that into decode (bytes_to_type)
     let input = from_utf8(b"").unwrap();
 
-    let res = Header::from_str(input);
-    assert!(res.is_err());
+    // let res = Header::from_str(input);
+    // assert!(res.is_err());
 
     // good input
 
@@ -449,9 +405,18 @@ fn test_str_to_struct() {
     let input = to_bytes(&res);
     println!("input after serialising to bytes = {:?}", input);
 
-    let input = bytes_to_str(&input);
-    println!("input after converting to str = {:?}", input);
-
-    let res = Header::from_str(&input);
-    assert!(res.is_ok());
+    let res: Option<Header> = bytes_to_type(&input);
+    // if Ok, then print it out, otherwise state error and panic
+    match res {
+        Some(r) => {
+            println!("res = {:?}", r);
+            let fs_name = r.fs_name;
+            if fs_name != FS_NAME {
+                panic!("QuickFS signature not found. Actual signature = {:?}", r.fs_name);
+            }
+        }
+        None => {
+            panic!("Error: couldn't reserialise header")
+        }
+    }
 }
