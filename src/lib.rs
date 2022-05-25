@@ -1,13 +1,31 @@
-#![no_std]
 #![feature(core_intrinsics)]
+#![feature(concat_bytes)]
+#![cfg_attr(not(test), no_std)]
 
 // ------------
 // USE LIBS
 // ------------
 
-use core::{char::ParseCharError, mem, num::ParseIntError, ops::Range, slice, str::FromStr};
+use core::{
+    char::ParseCharError,
+    mem,
+    num::ParseIntError,
+    ops::Range,
+    slice,
+    str::{from_utf8, FromStr},
+};
 
+// assume some global allocator exists (and also the handler for it)
+extern crate alloc;
+
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
+use bincode::{config, Decode, Encode};
 use neutronapi::KTimestamp;
+
+use serde::{Deserialize, Serialize};
 
 // ------------
 // STRUCTURES
@@ -27,7 +45,7 @@ C + ClusterCount * 2*SectorsPerClusterShift.. - Free Data Area (grow into like h
 /*
 Theres exactly 1:1 ratio between FAT entries and clusters in the cluster heap/free area.
 
-Each cluster in the heap is 4K and has a 32-bit entry header, file, filename, extension. If its a file entry, it should have subsequent headers for its filename and fileinfo (extension). 
+Each cluster in the heap is 4K and has a 32-bit entry header, file, filename, extension. If its a file entry, it should have subsequent headers for its filename and fileinfo (extension).
 
 We cant know which file is what with just the FAT itself. Need access to the Root Dir. Which has child dirs and files. As entries. Since / is a dir, it would have a bunch of children entries after its own metadata that takes up like 2/3 entries. Then you have n entries after that for n children, including . and .. (which could be simulated actually)
 
@@ -38,15 +56,21 @@ E.g.
 You then read that. To then get the children of /boot in the same way
 */
 
+// Serialise should always serialise to a C-like struct. I dont want padding but apparently some unaligned reads/writes could be problematic. Not just for performance, but it could literally not work
+// So implict padding for headers/metadata is fine I'd say. The actual data area itself shouldnt have padding or be structured in anyway
+
 pub const CLUSTER_SIZE_L16TB: u64 = 4096;
 
-pub const FS_NAME: [char; 7] = ['Q', 'U', 'I', 'C', 'K', 'F', 'S'];
+// pub const FS_NAME: [char; 7] = ['Q', 'U', 'I', 'C', 'K', 'F', 'S'];
+
+pub const FS_NAME: [u8; 7] = *b"QUICKFS";
 
 // Cant be used directly as an EFI system partition, can as an ARCI partition
 #[repr(C)]
+#[derive(Debug, Clone, Copy, Encode, Decode)]
 pub struct Header {
     // Should just use a proper file in /boot (bootloader) as the boot code without any limits
-    fs_name: [char; 7],
+    fs_name: [u8; 7],
     partition_offset: u64,
     vol_length: u64,
     fat_offset: u32,
@@ -59,11 +83,11 @@ pub struct Header {
     bytes_per_sector_shift: u8,
     sectors_per_cluster_shift: u8,
     // up to 1 extra FAT for redundancy
-    redundant_fat: bool,
+    redundant_fat: u8,
     // update on the fly, prob not too important, just nice cache. rounded down
     percent_in_use: u8,
     // if marked as a boot partition, ARCI will search /boot/arcboot
-    is_boot_partition: bool,
+    is_boot_partition: u8,
 }
 
 impl Header {
@@ -78,9 +102,9 @@ impl Header {
         first_cluster_of_root_dir: u32,
         bytes_per_sector_shift: u8,
         sectors_per_cluster_shift: u8,
-        redundant_fat: bool,
+        redundant_fat: u8,
         percent_in_use: u8,
-        is_boot_partition: bool,
+        is_boot_partition: u8,
     ) -> Self {
         Self {
             fs_name: FS_NAME,
@@ -262,6 +286,27 @@ impl FATEntry {
 // API
 // ------------
 
+fn to_bytes<T: Encode>(t: &T) -> Vec<u8> {
+    let res = bincode::encode_to_vec(
+        t,
+        config::standard()
+            .with_little_endian()
+            .write_fixed_array_length()
+            .with_fixed_int_encoding(),
+    );
+
+    match res {
+        Ok(r) => r,
+        Err(_) => panic!("Something went wrong with serialising to bytes"),
+    }
+}
+
+fn bytes_to_str(bytes: &Vec<u8>) -> String {
+    let res = core::str::from_utf8(bytes).unwrap_or("Error: couldnt convert bytes into a String");
+
+    String::from(res)
+}
+
 /// Type must implement FromStr!
 macro_rules! retrieve_or_propagate {
     ($in:expr,$in_type:tt) => {
@@ -288,6 +333,8 @@ impl FromStr for Header {
     /// And return a BootSector struct
     /// For use in memory
     fn from_str(raw_string: &str) -> Result<Self, Self::Err> {
+        // debug: log the items
+
         // the header portion
         if raw_string.len() != mem::size_of::<Header>() {
             return Err(());
@@ -344,3 +391,67 @@ fn read_inodes() {}
 fn walk_fs() {}
 
 fn print_fs() {}
+
+// --------------
+// TESTS
+// --------------
+
+#[test]
+fn test_str_to_struct() {
+    // bad input
+    // NOTE: convert to str
+    let input = from_utf8(b"").unwrap();
+
+    let res = Header::from_str(input);
+    assert!(res.is_err());
+
+    // good input
+
+    // i think it actually pads the stuff, so use debug
+
+    // NOTE: numerics need to be of the same size, e.g. 64bit, 32bit, 8bit and little endian
+    let partition_offset = 0 as u64;
+    let vol_length = 0 as u64;
+    let fat_offset = 0 as u32;
+    let fat_length = 0 as u32;
+    let cluster_heap_offset = 0 as u32;
+    let cluster_count = 0 as u32;
+
+    let first_cluster_of_root_dir = 0 as u32;
+    let bytes_per_sector_shift = 0 as u8;
+    let sectors_per_cluster_shift = 0 as u8;
+    // NOTE: false == 0 as u8. true == 1 as u8 if padding is required
+    let redundant_fat = false as u8;
+    let percent_in_use = 0 as u8;
+    let is_boot_partition = false as u8;
+
+    // JUST SERIALISE INTO a STRING -> THEN DESERIALISE with FromStr
+
+    // create struct
+    let res = Header::new(
+        partition_offset,
+        vol_length,
+        fat_offset,
+        fat_length,
+        cluster_heap_offset,
+        cluster_count,
+        first_cluster_of_root_dir,
+        bytes_per_sector_shift,
+        sectors_per_cluster_shift,
+        redundant_fat,
+        percent_in_use,
+        is_boot_partition,
+    );
+
+    println!("res after constructing Header = {:?}", res);
+
+    // serialise
+    let input = to_bytes(&res);
+    println!("input after serialising to bytes = {:?}", input);
+
+    let input = bytes_to_str(&input);
+    println!("input after converting to str = {:?}", input);
+
+    let res = Header::from_str(&input);
+    assert!(res.is_ok());
+}
