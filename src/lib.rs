@@ -174,6 +174,10 @@ pub enum FileAttributes {
 #[repr(C)]
 pub enum DirectoryEntry {
     // Also a directory entry
+    // Stored in the actual cluster (4K) data area
+    // can store up to 128 entries in a cluster for a directory. If more is needed, the dir can point to another cluster and use that (FAT)
+    // a file entry should actually have a stream entry right after it. Also directories too so you can tell how big they are
+    // the single stream entry should tell you where the first cluster is and so you can follow the FAT for that too
     FileEntry {
         entry_type: EntryType,
         checksum: u16,
@@ -283,7 +287,7 @@ impl FATEntry {
 }
 
 // ------------
-// API
+// INTERNAL API
 // ------------
 
 pub fn to_bytes<T: Encode>(t: &T) -> Vec<u8> {
@@ -340,6 +344,9 @@ macro_rules! retrieve_or_propagate {
 }
 
 // JUST USE FROMSTR
+
+// https://students.cs.byu.edu/~cs345ta/labs/P6-FAT%20Supplement.html
+// great stuff
 
 fn read_inodes() {}
 
@@ -412,11 +419,35 @@ fn test_str_to_struct() {
             println!("res = {:?}", r);
             let fs_name = r.fs_name;
             if fs_name != FS_NAME {
-                panic!("QuickFS signature not found. Actual signature = {:?}", r.fs_name);
+                panic!(
+                    "QuickFS signature not found. Actual signature = {:?}",
+                    r.fs_name
+                );
             }
         }
         None => {
             panic!("Error: couldn't reserialise header")
         }
     }
+}
+
+// ------------
+// SYSTEM API
+// ------------
+
+// uses the internal api
+
+// VFS API
+// read, write, open, close
+// in QFS, open() actually reads() it into memory
+
+// in Neutron, there isnt really an 'open'. But since std::fs has open, we do have it
+// read() doesnt actually mean open() first. Esp read_to_string() reads the entire thing or just read() means read_to_string
+
+// converts the filepath to a disk path
+// by searching the in memory DB of the rootfs tree
+// if there, attempt to go there by following the same disk path
+// or if the file's beginning offset is cached in the in memory struct (tree), go to that offset directly and follow the chains (FAT)
+fn read_to_string(filepath: &str) {
+    // walk the fs to see if that file exists
 }
