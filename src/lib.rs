@@ -81,6 +81,16 @@ pub const MAX_FILE_SIZE: u64 = u64::MAX - 1;
 // we dont support unicode
 type Filename = [u8; 256];
 
+#[repr(u32)]
+#[derive(PartialOrd, Ord, PartialEq, Eq)]
+pub enum FATEntryType {
+    Free = 0x0,
+    // Pseudo type, used as an else condition
+    Pointer,
+    Bad = 0xFFFFFFF7,
+    EndOfChain = 0xFFFFFFFF,
+}
+
 // Mostly for firmware use. Firmware will get a hint of what the dir/file is
 // Actually IDK. Prob better to just hold that in an actual file as bytes
 // Like most other things, so you can isolate them
@@ -109,7 +119,7 @@ pub struct Header {
     fat_offset: u64,
     // Should be N for N clusters. On a 1TB partition with 4K sectors, you have 250 million sectors. Most of which can be used for the area
     fat_length: u64,
-    // the offset of the data area (or FAT?) from the start of the header. Prob something like 
+    // the offset of the data area (or FAT?) from the start of the header. Prob something like
     cluster_heap_offset: u64,
     cluster_count: u64,
     // should be 0 or 4 (exFAT). Just 0 in QFS
@@ -183,9 +193,9 @@ impl Default for Header {
 // So you have:
 // Cluster 1: (or any)
 //  RootDirEntry 512B
-//  FileEntry 512B -> start cluster 5
-//  FileEntry 512B -> start cluster 12
-//  FileEntry 512B -> start cluster 47
+//  FileHeader 512B -> start cluster 5
+//  FileHeader 512B -> start cluster 12
+//  FileHeader 512B -> start cluster 47
 
 // Also a directory entry. A dir is just a file with pointers to other files
 // Stored in the actual cluster (4K) data area
@@ -195,37 +205,29 @@ impl Default for Header {
 
 // IDK if should be aligned to page. I think it kinda makes sense since the each cluster should store at most 1 file entry. But can store its data in the end of the sector
 // I think it makes more sense to store as less as possible within the data area so you have a quick cache place. You can also journal there so if the journal val for a file is 0 its fine. But 1 means it still hasnt been fully committed. You set it to 1 and write to journal. Then write to the data
+// I dont like long filenames for an fs like QFS. Just use paths. Maybe you want a 256B SHA-256  (each bit is actually a char)
+// Maybe we can align it to a multiple of 64
+// Like 320B. At least for QFS(64)
+
+pub const FILE_HEADER_SIZE_64: u64 = 320;
+
+/// A filename can be at most 256B
 #[repr(C, align(4096))]
-pub struct FileEntry {
+pub struct FileHeader {
     // CRC32C checksum
     checksum: u32,
-    // a read only file should not be modified. Usually a system file
-    // Not really a thing on QFS
-    // file_attributes: FileAttributes,
-    // I feel like it'd make more sense to store more in another file. I.e. the "user" API
-    creation_timestamp: KTimestamp,
-    last_modification_timestamp: KTimestamp,
-    last_access_timestamp: KTimestamp,
-    hash_of_name: u16,
-    first_cluster: u32,
-    // need to update this (basically a cached field)
+    // 32bit padding
+    first_cluster: u64,
+    // need to update this when you resize the file (basically a cached field)
+    // Note files with a lot of empty space isnt accounted for. You should use software to truncate the file or represent it in a different way. Why would you have a bunch of empty space anyway?
     length_of_data: u64,
     filename: Filename,
+    // implcit padding to 320B
 }
 
 #[repr(C)]
 pub struct FATEntry {
     val: u64,
-}
-
-#[repr(u32)]
-#[derive(PartialOrd, Ord, PartialEq, Eq)]
-pub enum FATEntryType {
-    Free = 0x0,
-    // Pseudo type, used as an else condition
-    Pointer,
-    Bad = 0xFFFFFFF7,
-    EndOfChain = 0xFFFFFFFF,
 }
 
 impl FATEntry {
@@ -243,9 +245,52 @@ impl FATEntry {
     }
 }
 
+pub struct FAT<const T: usize> {
+    entries: [u8; T],
+}
+
+impl<const T: usize> FAT<T> {
+    pub fn new(entries: [u8; T]) -> Self {
+        Self { entries }
+    }
+}
+
+// Right after FAT is a LIFO stack of free clusters. There is a pointer to the top of the stack. Its basically an N list like the FAT. We make separate structures in case we want to do something later on
+pub struct FreeCluster<const T: usize> {
+    // always insert before entries[top] and top--
+    entries: [u8; T],
+    top: usize,
+}
+
+impl<const T: usize> FreeCluster<T> {
+    pub fn new(entries: [u8; T], top: usize) -> Self {
+        Self { entries, top }
+    }
+}
+
 // ------------
 // INTERNAL API
 // ------------
+
+pub struct FileTimeData {
+    creation_timestamp: KTimestamp,
+    last_modification_timestamp: KTimestamp,
+    last_access_timestamp: KTimestamp,
+}
+
+impl FileTimeData {
+    pub fn new(
+        creation_timestamp: KTimestamp,
+        last_modification_timestamp: KTimestamp,
+        last_access_timestamp: KTimestamp,
+    ) -> Self {
+        Self {
+            creation_timestamp,
+            last_modification_timestamp,
+            last_access_timestamp,
+        }
+    }
+}
 
 pub fn to_bytes<T: Encode>(t: &T) -> Vec<u8> {
     let res = bincode::encode_to_vec(
@@ -300,8 +345,6 @@ macro_rules! retrieve_or_propagate {
     };
 }
 
-// JUST USE FROMSTR
-
 // https://students.cs.byu.edu/~cs345ta/labs/P6-FAT%20Supplement.html
 // great stuff
 
@@ -316,18 +359,22 @@ fn print_fs() {}
 // --------------
 
 #[test]
-fn test_str_to_struct() {
-    // bad input
-    // NOTE: convert to str
+fn test_bad_input() {
+    // short input
     // Basically, just read from a file into a &[u8] instead and pass that into decode (bytes_to_type)
     let input = from_utf8(b"").unwrap();
 
     // let res = Header::from_str(input);
     // assert!(res.is_err());
 
-    // good input
+    // nonsense input of same size
 
-    // i think it actually pads the stuff, so use debug
+    // long size
+}
+
+#[test]
+fn test_str_to_struct() {
+    // I actually dunno how its padded and aligned. We simulate sectors by writing headers to align page size and proper cluster/sector offsets
 
     // NOTE: numerics need to be of the same size, e.g. 64bit, 32bit, 8bit and little endian
     let partition_offset = 0 as u64;
@@ -340,12 +387,10 @@ fn test_str_to_struct() {
     let first_cluster_of_root_dir = 0 as u64;
     let bytes_per_sector_shift = 0 as u8;
     let sectors_per_cluster_shift = 0 as u8;
-    // NOTE: false == 0 as u8. true == 1 as u8 if padding is required
+    // NOTE: false == 0 as u8. true == 1 as u8 just in case
     let redundant_fat = false as u8;
     let percent_in_use = 0 as u8;
     let is_boot_partition = false as u8;
-
-    // JUST SERIALISE INTO a STRING -> THEN DESERIALISE with FromStr
 
     // create struct
     let res = Header::new(
