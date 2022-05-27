@@ -2,23 +2,6 @@
 #![feature(concat_bytes)]
 #![cfg_attr(not(test), no_std)]
 
-// ------------
-// USE LIBS
-// ------------
-
-// assume some global allocator exists (and also the handler for it)
-extern crate alloc;
-
-use core::str::from_utf8;
-
-use alloc::{string::String, vec::Vec};
-use bincode::{config, decode_from_slice, error::DecodeError, Decode, Encode};
-use neutronapi::KTimestamp;
-
-// ------------
-// STRUCTURES
-// ------------
-
 /*
 let C = FATLength * NumberOfFATs
 
@@ -47,27 +30,91 @@ You then read that. To then get the children of /boot in the same way
 // Serialise should always serialise to a C-like struct. I dont want padding but apparently some unaligned reads/writes could be problematic. Not just for performance, but it could literally not work
 // So implict padding for headers/metadata is fine I'd say. The actual data area itself shouldnt have padding or be structured in anyway
 
-pub const CLUSTER_SIZE_L16TB: u64 = 4096;
+// should time modified, created, accessed be stored separately as a yml?
+/*
+/
+    boot/
+    config/
 
-// pub const FS_NAME: [char; 7] = ['Q', 'U', 'I', 'C', 'K', 'F', 'S'];
+"/":
+    last_modified: "dd-mm-yyyy"
+    children:
+      - "boot":
+        last_modified: "dd-mm-yyyy"
+      - "config":
+        last_modified: "dd-mm-yyyy"
+
+Note "." and ".." are implicit. Idk if we have to have it on std::fs though
+But on the shell, you can just show it with ls
+*/
+
+// Do the entries have to be 32B? I guess its just easier to align them properly for reading and writing?
+// Maybe just make it 64B
+// or The next divisible after 300B. 512B just for the file header... I think its fine
+
+// NOTE: Assume some global allocator exists (and also the handler for it)
+
+// ------------
+// USE LIBS
+// ------------
+
+extern crate alloc;
+
+use alloc::{string::String, vec::Vec};
+use bincode::{config, decode_from_slice, error::DecodeError, Decode, Encode};
+use core::str::from_utf8;
+use neutronapi::KTimestamp;
+
+// -------------
+// TYPES + CONSTANTS
+// -------------
+
+pub const CLUSTER_SIZE_L16TB: u64 = 4096;
+// size of actual sectors on disk. Most likely 4K for SSDs
+pub const SECTOR_SIZE: u64 = 4096;
 
 pub const FS_NAME: [u8; 7] = *b"QUICKFS";
 
+// -1 just in case rust or some code does something funny
+pub const MAX_FILE_SIZE: u64 = u64::MAX - 1;
+
+// we dont support unicode
+type Filename = [u8; 256];
+
+// Mostly for firmware use. Firmware will get a hint of what the dir/file is
+// Actually IDK. Prob better to just hold that in an actual file as bytes
+// Like most other things, so you can isolate them
+// #[repr(u8)]
+// pub enum FileAttributes {
+//     ReadOnly,
+//     ReadWrite,
+// }
+
+// ------------
+// STRUCTURES
+// ------------
+
 // Cant be used directly as an EFI system partition, can as an ARCI partition
-#[repr(C)]
+// Should have its own sector. And the first one of the partition (4K)
+// The sector after that follow should always be the FAT. The FAT can take as many sectors as you need but scales with size of the partition (N sectors)
+#[repr(C, align(4096))]
 #[derive(Debug, Clone, Copy, Encode, Decode)]
 pub struct Header {
     // Should just use a proper file in /boot (bootloader) as the boot code without any limits
     fs_name: [u8; 7],
     partition_offset: u64,
+    // the size in bytes (or sectors?) of this partition
     vol_length: u64,
-    fat_offset: u32,
-    fat_length: u32,
-    cluster_heap_offset: u32,
-    cluster_count: u32,
+    // UNC: could prob be u8. Or we could just assume it comes right after the header. Either 0 or 4K
+    fat_offset: u64,
+    // Should be N for N clusters. On a 1TB partition with 4K sectors, you have 250 million sectors. Most of which can be used for the area
+    fat_length: u64,
+    // the offset of the data area (or FAT?) from the start of the header. Prob something like 
+    cluster_heap_offset: u64,
+    cluster_count: u64,
     // should be 0 or 4 (exFAT). Just 0 in QFS
     // first FAT entry is root dir. It should also point to either EndOfChain or 0
-    first_cluster_of_root_dir: u32,
+    first_cluster_of_root_dir: u64,
     bytes_per_sector_shift: u8,
     sectors_per_cluster_shift: u8,
     // up to 1 extra FAT for redundancy
@@ -83,11 +130,11 @@ impl Header {
     pub fn new(
         partition_offset: u64,
         vol_length: u64,
-        fat_offset: u32,
-        fat_length: u32,
-        cluster_heap_offset: u32,
-        cluster_count: u32,
-        first_cluster_of_root_dir: u32,
+        fat_offset: u64,
+        fat_length: u64,
+        cluster_heap_offset: u64,
+        cluster_count: u64,
+        first_cluster_of_root_dir: u64,
         bytes_per_sector_shift: u8,
         sectors_per_cluster_shift: u8,
         redundant_fat: u8,
@@ -133,53 +180,6 @@ impl Default for Header {
     }
 }
 
-// -1 just in case rust or some code does something funny
-pub const MAX_FILE_SIZE: u64 = u64::MAX - 1;
-
-#[repr(u8)]
-pub enum EntryType {
-    // Core
-    FileEntry = 0x85,
-    ExtensionEntry = 0xC0,
-    FilenameEntry = 0xC1,
-    // Meta
-    AllocationBitmap = 0x81,
-    UpcaseTable = 0x82,
-    VolumeLabel = 0x83,
-}
-
-type DirEntSiz = [u8; 32];
-
-// * ENSURE that each entry is 32 bytes. Just append x bytes to the end of each
-
-#[repr(u16)]
-pub enum FileAttributes {
-    RD_ONLY,
-    RD_WRITE,
-}
-
-// should time modified, created, accessed be stored separately as a yml?
-/*
-/
-    boot/
-    config/
-
-"/":
-    last_modified: "dd-mm-yyyy"
-    children:
-      - "boot":
-        last_modified: "dd-mm-yyyy"
-      - "config":
-        last_modified: "dd-mm-yyyy"
-
-Note "." and ".." are implicit. Idk if we have to have it on std::fs though
-But on the shell, you can just show it with ls
-*/
-
-// Do the entries have to be 32B? I guess its just easier to align them properly for reading and writing?
-// Maybe just make it 64B
-// or The next divisible after 300B. 512B just for the file header... I think its fine
-
 // So you have:
 // Cluster 1: (or any)
 //  RootDirEntry 512B
@@ -187,98 +187,35 @@ But on the shell, you can just show it with ls
 //  FileEntry 512B -> start cluster 12
 //  FileEntry 512B -> start cluster 47
 
-/// The new() functions set the right entry type vals by default
-#[repr(C)]
-pub enum DirectoryEntry {
-    // Also a directory entry
-    // Stored in the actual cluster (4K) data area
-    // can store up to 128 entries in a cluster for a directory. If more is needed, the dir can point to another cluster and use that (FAT)
-    // a file entry should actually have a stream entry right after it. Also directories too so you can tell how big they are
-    // the single stream entry should tell you where the first cluster is and so you can follow the FAT for that too
-    FileEntry {
-        entry_type: EntryType,
-        checksum: u16,
-        n_secondary_entries: u8,
-        file_attributes: FileAttributes,
-        creation_timestamp: KTimestamp,
-        last_modification_timestamp: KTimestamp,
-        last_access_timestamp: KTimestamp,
-        // padding for 32B
-        padding: [u8; 8],
-    },
-    ExtensionEntry {
-        // should be flags, filenamelengthinbytes. The first cluster is good
-        entry_type: EntryType,
-        secondary_files: u8,
-        length_of_name: u8,
-        hash_of_name: u16,
-        first_cluster: u32,
-        length_of_data: u64,
-        // padding for 32B
-        padding: [u8; 17],
-    },
-    // Each filename takes at least 8B and at most 256B
-    // Maybe just make it so its always 256B
-    // FilenameEntry {
-    //     entry_type: EntryType,
-    //     // if longerr filename, use an extension entry and set flags EXTRA_FILENAME. Doesnt include full name of the path
-    //     flags: FilenameFlags,
-    //     filename: [u8; 30],
-    // Need [u8; 256]
-    // },
-}
+// Also a directory entry. A dir is just a file with pointers to other files
+// Stored in the actual cluster (4K) data area
+// can store up to 128 entries in a cluster for a directory. If more is needed, the dir can point to another cluster and use that (FAT)
+// a file entry should actually have a stream entry right after it. Also directories too so you can tell how big they are
+// the single stream entry should tell you where the first cluster is and so you can follow the FAT for that too
 
-#[repr(u8)]
-pub enum FilenameFlags {
-    Standard,
-    LongerFilename,
-}
-
-impl DirectoryEntry {
-    /// @arg current_date => "yyyy-mm-dd"
-    pub fn new_file_entry(current_date: &str) -> Result<Self, ()> {
-        let curr_date = match KTimestamp::from_yyyy_mm_dd(current_date) {
-            Some(d) => d,
-            None => return Err(()),
-        };
-
-        Ok(Self::FileEntry {
-            entry_type: EntryType::FileEntry,
-            checksum: 0,
-            n_secondary_entries: 0,
-            file_attributes: FileAttributes::RD_WRITE,
-            creation_timestamp: curr_date,
-            last_modification_timestamp: curr_date,
-            last_access_timestamp: curr_date,
-            padding: Default::default(),
-        })
-    }
-
-    // pub fn new_filename_entry(filename: &[u8; 30]) -> Self {
-    //     Self::FilenameEntry {
-    //         entry_type: EntryType::FilenameEntry,
-    //         flags: FilenameFlags::Standard,
-    //         filename: filename.clone(),
-    //     }
-    // }
-
-    // Should just make it manually, for now
-    pub fn new_extension_entry() -> Self {
-        Self::ExtensionEntry {
-            entry_type: (),
-            secondary_files: (),
-            length_of_name: (),
-            hash_of_name: (),
-            first_cluster: (),
-            length_of_data: (),
-            padding: (),
-        }
-    }
+// IDK if should be aligned to page. I think it kinda makes sense since the each cluster should store at most 1 file entry. But can store its data in the end of the sector
+// I think it makes more sense to store as less as possible within the data area so you have a quick cache place. You can also journal there so if the journal val for a file is 0 its fine. But 1 means it still hasnt been fully committed. You set it to 1 and write to journal. Then write to the data
+#[repr(C, align(4096))]
+pub struct FileEntry {
+    // CRC32C checksum
+    checksum: u32,
+    // a read only file should not be modified. Usually a system file
+    // Not really a thing on QFS
+    // file_attributes: FileAttributes,
+    // I feel like it'd make more sense to store more in another file. I.e. the "user" API
+    creation_timestamp: KTimestamp,
+    last_modification_timestamp: KTimestamp,
+    last_access_timestamp: KTimestamp,
+    hash_of_name: u16,
+    first_cluster: u32,
+    // need to update this (basically a cached field)
+    length_of_data: u64,
+    filename: Filename,
 }
 
 #[repr(C)]
 pub struct FATEntry {
-    val: u32,
+    val: u64,
 }
 
 #[repr(u32)]
@@ -292,7 +229,7 @@ pub enum FATEntryType {
 }
 
 impl FATEntry {
-    pub fn new(val: u32) -> Self {
+    pub fn new(val: u64) -> Self {
         Self { val }
     }
 
@@ -395,12 +332,12 @@ fn test_str_to_struct() {
     // NOTE: numerics need to be of the same size, e.g. 64bit, 32bit, 8bit and little endian
     let partition_offset = 0 as u64;
     let vol_length = 0 as u64;
-    let fat_offset = 0 as u32;
-    let fat_length = 0 as u32;
-    let cluster_heap_offset = 0 as u32;
-    let cluster_count = 0 as u32;
+    let fat_offset = 0 as u64;
+    let fat_length = 0 as u64;
+    let cluster_heap_offset = 0 as u64;
+    let cluster_count = 0 as u64;
 
-    let first_cluster_of_root_dir = 0 as u32;
+    let first_cluster_of_root_dir = 0 as u64;
     let bytes_per_sector_shift = 0 as u8;
     let sectors_per_cluster_shift = 0 as u8;
     // NOTE: false == 0 as u8. true == 1 as u8 if padding is required
