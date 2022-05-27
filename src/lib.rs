@@ -6,26 +6,14 @@
 // USE LIBS
 // ------------
 
-use core::{
-    char::ParseCharError,
-    mem,
-    num::ParseIntError,
-    ops::Range,
-    slice,
-    str::{from_utf8, FromStr},
-};
-
 // assume some global allocator exists (and also the handler for it)
 extern crate alloc;
 
-use alloc::{
-    string::{String, ToString},
-    vec::Vec,
-};
+use core::str::from_utf8;
+
+use alloc::{string::String, vec::Vec};
 use bincode::{config, decode_from_slice, error::DecodeError, Decode, Encode};
 use neutronapi::KTimestamp;
-
-use serde::{Deserialize, Serialize};
 
 // ------------
 // STRUCTURES
@@ -170,6 +158,35 @@ pub enum FileAttributes {
     RD_WRITE,
 }
 
+// should time modified, created, accessed be stored separately as a yml?
+/*
+/
+    boot/
+    config/
+
+"/":
+    last_modified: "dd-mm-yyyy"
+    children:
+      - "boot":
+        last_modified: "dd-mm-yyyy"
+      - "config":
+        last_modified: "dd-mm-yyyy"
+
+Note "." and ".." are implicit. Idk if we have to have it on std::fs though
+But on the shell, you can just show it with ls
+*/
+
+// Do the entries have to be 32B? I guess its just easier to align them properly for reading and writing?
+// Maybe just make it 64B
+// or The next divisible after 300B. 512B just for the file header... I think its fine
+
+// So you have:
+// Cluster 1: (or any)
+//  RootDirEntry 512B
+//  FileEntry 512B -> start cluster 5
+//  FileEntry 512B -> start cluster 12
+//  FileEntry 512B -> start cluster 47
+
 /// The new() functions set the right entry type vals by default
 #[repr(C)]
 pub enum DirectoryEntry {
@@ -200,12 +217,15 @@ pub enum DirectoryEntry {
         // padding for 32B
         padding: [u8; 17],
     },
-    FilenameEntry {
-        entry_type: EntryType,
-        // if longerr filename, use an extension entry and set flags EXTRA_FILENAME. Doesnt include full name of the path
-        flags: FilenameFlags,
-        filename: [u8; 30],
-    },
+    // Each filename takes at least 8B and at most 256B
+    // Maybe just make it so its always 256B
+    // FilenameEntry {
+    //     entry_type: EntryType,
+    //     // if longerr filename, use an extension entry and set flags EXTRA_FILENAME. Doesnt include full name of the path
+    //     flags: FilenameFlags,
+    //     filename: [u8; 30],
+    // Need [u8; 256]
+    // },
 }
 
 #[repr(u8)]
@@ -234,26 +254,26 @@ impl DirectoryEntry {
         })
     }
 
-    pub fn new_filename_entry(filename: &[u8; 30]) -> Self {
-        Self::FilenameEntry {
-            entry_type: EntryType::FilenameEntry,
-            flags: FilenameFlags::Standard,
-            filename: filename.clone(),
-        }
-    }
-
-    // Should just make it manually, for now
-    // pub fn new_extension_entry() -> Self {
-    //     Self::ExtensionEntry {
-    //         entry_type: (),
-    //         secondary_files: (),
-    //         length_of_name: (),
-    //         hash_of_name: (),
-    //         first_cluster: (),
-    //         length_of_data: (),
-    //         padding: (),
+    // pub fn new_filename_entry(filename: &[u8; 30]) -> Self {
+    //     Self::FilenameEntry {
+    //         entry_type: EntryType::FilenameEntry,
+    //         flags: FilenameFlags::Standard,
+    //         filename: filename.clone(),
     //     }
     // }
+
+    // Should just make it manually, for now
+    pub fn new_extension_entry() -> Self {
+        Self::ExtensionEntry {
+            entry_type: (),
+            secondary_files: (),
+            length_of_name: (),
+            hash_of_name: (),
+            first_cluster: (),
+            length_of_data: (),
+            padding: (),
+        }
+    }
 }
 
 #[repr(C)]
