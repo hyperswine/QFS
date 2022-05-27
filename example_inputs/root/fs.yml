@@ -1,0 +1,4 @@
+# NOTE: should write to fs.raw as bytes
+# this is mostly for user viewing and debugging
+
+# can convert to each with serde yaml and serde bincode

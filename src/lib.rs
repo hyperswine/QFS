@@ -78,6 +78,8 @@ pub const FS_NAME: [u8; 7] = *b"QUICKFS";
 // -1 just in case rust or some code does something funny
 pub const MAX_FILE_SIZE: u64 = u64::MAX - 1;
 
+pub const FILE_HEADER_SIZE_64: u64 = 320;
+
 // we dont support unicode
 type Filename = [u8; 256];
 
@@ -103,6 +105,25 @@ pub enum FATEntryType {
 // ------------
 // STRUCTURES
 // ------------
+
+// So you have:
+// Cluster 1: (or any)
+//  RootDirEntry 512B
+//  FileHeader 512B -> start cluster 5
+//  FileHeader 512B -> start cluster 12
+//  FileHeader 512B -> start cluster 47
+
+// Also a directory entry. A dir is just a file with pointers to other files
+// Stored in the actual cluster (4K) data area
+// can store up to 128 entries in a cluster for a directory. If more is needed, the dir can point to another cluster and use that (FAT)
+// a file entry should actually have a stream entry right after it. Also directories too so you can tell how big they are
+// the single stream entry should tell you where the first cluster is and so you can follow the FAT for that too
+
+// IDK if should be aligned to page. I think it kinda makes sense since the each cluster should store at most 1 file entry. But can store its data in the end of the sector
+// I think it makes more sense to store as less as possible within the data area so you have a quick cache place. You can also journal there so if the journal val for a file is 0 its fine. But 1 means it still hasnt been fully committed. You set it to 1 and write to journal. Then write to the data
+// I dont like long filenames for an fs like QFS. Just use paths. Maybe you want a 256B SHA-256  (each bit is actually a char)
+// Maybe we can align it to a multiple of 64
+// Like 320B. At least for QFS(64)
 
 // Cant be used directly as an EFI system partition, can as an ARCI partition
 // Should have its own sector. And the first one of the partition (4K)
@@ -189,27 +210,6 @@ impl Default for Header {
         }
     }
 }
-
-// So you have:
-// Cluster 1: (or any)
-//  RootDirEntry 512B
-//  FileHeader 512B -> start cluster 5
-//  FileHeader 512B -> start cluster 12
-//  FileHeader 512B -> start cluster 47
-
-// Also a directory entry. A dir is just a file with pointers to other files
-// Stored in the actual cluster (4K) data area
-// can store up to 128 entries in a cluster for a directory. If more is needed, the dir can point to another cluster and use that (FAT)
-// a file entry should actually have a stream entry right after it. Also directories too so you can tell how big they are
-// the single stream entry should tell you where the first cluster is and so you can follow the FAT for that too
-
-// IDK if should be aligned to page. I think it kinda makes sense since the each cluster should store at most 1 file entry. But can store its data in the end of the sector
-// I think it makes more sense to store as less as possible within the data area so you have a quick cache place. You can also journal there so if the journal val for a file is 0 its fine. But 1 means it still hasnt been fully committed. You set it to 1 and write to journal. Then write to the data
-// I dont like long filenames for an fs like QFS. Just use paths. Maybe you want a 256B SHA-256  (each bit is actually a char)
-// Maybe we can align it to a multiple of 64
-// Like 320B. At least for QFS(64)
-
-pub const FILE_HEADER_SIZE_64: u64 = 320;
 
 /// A filename can be at most 256B
 #[repr(C, align(4096))]
