@@ -22,7 +22,7 @@ fn main() {
     // read qfs_file to string
     // let qfs_file = std::fs::read_to_string(qfs_file).expect("couldn't read qfs_file");
 
-    // open the file
+    // open the file (creates the file if doesnt exist)
     let mut f = File::open(qfs_file).unwrap();
 
     // HEADER == boot sector
@@ -74,6 +74,32 @@ fn test_write_then_read() {
     // print
     let res = res.unwrap();
     println!("res = {:?}", res);
+}
+
+#[test]
+fn test_zstd() {
+    // compress lorem ipsum
+    let lorem = std::fs::File::open("lorem").expect("Couldnt read ipsum");
+
+    let mut buffer = File::create("out").expect("Couldn't create file \"out\"");
+
+    // compare size of buffer to lorem
+    let size_of_lorem = lorem
+        .metadata()
+        .expect("Couldnt get metadata of lorem")
+        .len();
+
+    zstd::stream::copy_encode(&lorem, &buffer, 15).unwrap();
+
+    let size_of_buffer = buffer
+        .metadata()
+        .expect("Couldnt get metadata of out")
+        .len();
+
+    println!(
+        "ratio lorem:buffer = {}",
+        size_of_lorem as f64 / size_of_buffer as f64
+    );
 }
 
 // the file will be treated as a byte file

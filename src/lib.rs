@@ -245,6 +245,7 @@ impl FATEntry {
     }
 }
 
+#[repr(C)]
 pub struct FAT<const T: usize> {
     entries: [u8; T],
 }
@@ -256,6 +257,7 @@ impl<const T: usize> FAT<T> {
 }
 
 // Right after FAT is a LIFO stack of free clusters. There is a pointer to the top of the stack. Its basically an N list like the FAT. We make separate structures in case we want to do something later on
+#[repr(C)]
 pub struct FreeCluster<const T: usize> {
     // always insert before entries[top] and top--
     entries: [u8; T],
@@ -266,6 +268,28 @@ impl<const T: usize> FreeCluster<T> {
     pub fn new(entries: [u8; T], top: usize) -> Self {
         Self { entries, top }
     }
+}
+
+// NOTE: the clusters shouldnt be mapped to memory if you dont need to
+// Esp for big partitions
+// Just have to map the rootfs layout and general metadata, not the actual file data
+// If FULL_MAP = true, then map the entire fs file data to memory as well in a CoW manner like redis. And commit in diffs or something
+
+// Compression: compression applies to the cluster data area only. Files can be individually compressed. Through Z-std/huffman and its compression tables right after the subheader
+// All it does is take all the clusters of the file and applies the compression to it. Then deletes the old data and writes the new compressed data
+// BY default, the compression is balanced between speed (-7 min) and size (22 max)
+
+pub const Z_STD_COMPRESSION_LEVEL: u8 = 15; 
+
+// basically just a chunk of memory byte-address accessible
+#[repr(C)]
+pub struct Cluster4K {
+    data: [u8; 4096],
+}
+
+#[repr(C)]
+pub struct ClusterArea<const T: usize> {
+    clusters: [Cluster4K; T]
 }
 
 // ------------
@@ -348,8 +372,23 @@ macro_rules! retrieve_or_propagate {
 // https://students.cs.byu.edu/~cs345ta/labs/P6-FAT%20Supplement.html
 // great stuff
 
-fn read_inodes() {}
+// How different is the on disk structure hierarchy vs in memory?
+// Its quite similar but the in memory one has references or ownership so its so much faster
+// The idea is to always write to the in memory structure and read from it for all syscalls
+// then flush the in memory structure to disk by first journalling the changes needed to the fs.v file (per file). Then actually changing each file. Then finally changing them to 0
 
+// In memory structure (cached so you dont have to read from disk)
+// And can be cached to /fs.v (fs view) where you can also apply journalling per file
+pub struct QFS<const T: usize> {
+    // header
+    header: Header,
+    // FAT
+    fat: FAT<T>,
+    // LIFO
+    free_fat: FreeCluster<T>, // clusters
+}
+
+// Starts from / and builds the fs tree into a relevant user API in memory struct tree + any extra attributes as configured with /config/permissions.yml for each file
 fn walk_fs() {}
 
 fn print_fs() {}

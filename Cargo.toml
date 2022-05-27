@@ -10,5 +10,14 @@ neutronapi = { git = "https://github.com/hyperswine/neutronapi", features = [
     "interface",
 ] }
 read_exact = "0.0.1"
-bincode = { version = "2.0.0-rc.1", default-features = false, features = ["derive", "alloc"] }
+bincode = { version = "2.0.0-rc.1", default-features = false, features = [
+    "derive",
+    "alloc",
+] }
 serde = { version = "1.0.137", default-features = false, features = ["derive"] }
+zstd = { version = "0.11", optional = true }
+
+[features]
+default = ["compression"]
+# meant to be used with an OS, dont link to lib
+compression = ["zstd"]
