@@ -63,8 +63,9 @@ extern crate alloc;
 
 use alloc::{string::String, vec::Vec};
 use bincode::{config, decode_from_slice, error::DecodeError, Decode, Encode};
-use core::str::from_utf8;
+use core::{intrinsics::write_bytes, str::from_utf8};
 use neutronapi::KTimestamp;
+use zstd::zstd_safe::WriteBuf;
 
 // -------------
 // TYPES + CONSTANTS
@@ -314,17 +315,20 @@ pub struct DirData {
     files: Vec<u64>,
 }
 
+// actually handles a lot of the file writing ops
 impl DirData {
     pub fn new(n_files: u64, files: Vec<u64>) -> Self {
         Self { n_files, files }
     }
 
     // add a file (need to take enough clusters from the free cluster). Then pop them from there. Then break up the input data to fit the blocks. Then do a write to disk
+    // just pass the memory address of the start of the cluster area as *u64 (pointer)
     pub fn add_file<const T: usize>(
         &mut self,
         data: &[u8],
         free_clusters: &FreeClusters<T>,
-        cluster_data_offset: u64,
+        cluster_data_offset: isize,
+        write_to: *mut u64,
     ) {
         // in bytes
         let length_of_data = data.len();
@@ -344,15 +348,41 @@ impl DirData {
 
         // write to the clusters (you'll actually need a reference or pointer to the partition)
         for i in 0..blocks_needed {
+            // why is it a mut 64
+            let mut block_to_write = &data[i..4096 * (i + 1)];
+
+            // the address pointed to the start + offset
+            unsafe {
+                // write_to is a 64bit memory address of the in memory file or the on disk file
+                let write_to = write_to.offset(cluster_data_offset);
+
+                // let src = block_to_write.as_mut_ptr();
+
+                // why a pointer to a u64 for the source?
+                // maybe Im not understanding it
+
+                // write_to.copy_from(src, block_to_write.len());
+            }
+
+            // writes to disk
+            // maybe just copy_from_slice
+
+            // self.write_to_file(write_to, block_to_write.as_mut_ptr());
+
             // write the next data block to the cluster (sector) offset
             // NOTE: use a reference to the Writer. With an offset and size (given you know where the cluster data area is. Maybe pass that offset here)
         }
     }
 
+    // option 1: wrap the disk in a Writer and just use &str (I like this idea)
+    // option 2: treat the disk as a file. And just manually seek it and write to it
+
     // the size is implict to the data as we're just passing a str (u8) slice
     // convert [u8] to str with from_utf8. Note cant write to a negative offset. You should pass an offset at the start of the possible write area like the start of the free cluster area
-    pub fn write_to_file<W: core::fmt::Write>(&mut self, write_to: W, data: &str, offset: usize) {
-        //
+    pub fn write_to_file(&mut self, write_to: *mut u64, data: *mut u8) {
+        unsafe {
+            // write_bytes(write_to, data, count);
+        }
     }
 
     // remove a file
