@@ -1,6 +1,7 @@
 #![feature(core_intrinsics)]
 #![feature(concat_bytes)]
 #![cfg_attr(not(test), no_std)]
+#![feature(int_roundings)]
 
 /*
 let C = FATLength * NumberOfFATs
@@ -79,6 +80,9 @@ pub const FS_NAME: [u8; 7] = *b"QUICKFS";
 pub const MAX_FILE_SIZE: u64 = u64::MAX - 1;
 
 pub const FILE_HEADER_SIZE_64: u64 = 320;
+
+// can be defined here just to tell the OS what level of compression this partition prefers
+pub const Z_STD_COMPRESSION_LEVEL: u8 = 15;
 
 // we dont support unicode
 type Filename = [u8; 256];
@@ -245,29 +249,113 @@ impl FATEntry {
     }
 }
 
+// ---------------
+// IN MEMORY FIELDS
+// ---------------
+
+// representations of what is on the disk. If some of them are a bit problematic (DirData), remove it like the bytes_to_str? There will be an alloc available on the kernel and prob the bootloader anyway. Though there may be problems if that isnt done right (can just overwrite that memory after loading the kernel anyway and set a new heap area)
+// but can be dynamically alloc'd and resized
+// as long as alloc exists
+
 #[repr(C)]
 pub struct FAT<const T: usize> {
-    entries: [u8; T],
+    entries: [u64; T],
 }
 
 impl<const T: usize> FAT<T> {
-    pub fn new(entries: [u8; T]) -> Self {
+    pub fn new(entries: [u64; T]) -> Self {
         Self { entries }
     }
 }
 
 // Right after FAT is a LIFO stack of free clusters. There is a pointer to the top of the stack. Its basically an N list like the FAT. We make separate structures in case we want to do something later on
 #[repr(C)]
-pub struct FreeCluster<const T: usize> {
+pub struct FreeClusters<const T: usize> {
     // always insert before entries[top] and top--
-    entries: [u8; T],
+    n_free: usize,
+    // should be u64 like FAT
+    entries: [u64; T],
     top: usize,
 }
 
-impl<const T: usize> FreeCluster<T> {
-    pub fn new(entries: [u8; T], top: usize) -> Self {
-        Self { entries, top }
+impl<const T: usize> FreeClusters<T> {
+    pub fn new(n_free: usize, entries: [u64; T], top: usize) -> Self {
+        Self {
+            n_free,
+            entries,
+            top,
+        }
     }
+
+    // get N blocks. Could also use &'static for the program, but IDK. Return the static, clone it. When it goes in here, change it on the fly by using the stack?
+    // I dunno if generics is the best idea here. The compiler should make a another function (prob inlined) for each
+    pub fn get_blocks<const N: usize>(&self) -> Option<[u64; N]> {
+        // see if getting those blocks is possible
+        if N > self.n_free {
+            return None;
+        }
+
+        let mut res = [0 as u64; N];
+
+        // get them
+        res.clone_from_slice(&self.entries[self.top..N]);
+
+        Some(res)
+    }
+}
+
+// Directory data is basically a list of child files
+// each is a u64 that points to the starting cluster of that file
+// doesnt need to be aligned. Although prob right after the FileHeader. Just treated as a contiguous block of cluster numbers
+// Though it does need to be changed on the fly.. Maybe just place these in the std part
+#[repr(C)]
+pub struct DirData {
+    n_files: u64,
+    files: Vec<u64>,
+}
+
+impl DirData {
+    pub fn new(n_files: u64, files: Vec<u64>) -> Self {
+        Self { n_files, files }
+    }
+
+    // add a file (need to take enough clusters from the free cluster). Then pop them from there. Then break up the input data to fit the blocks. Then do a write to disk
+    pub fn add_file<const T: usize>(
+        &mut self,
+        data: &[u8],
+        free_clusters: &FreeClusters<T>,
+        cluster_data_offset: u64,
+    ) {
+        // in bytes
+        let length_of_data = data.len();
+        let blocks_needed = (length_of_data).div_ceil(4096);
+
+        // lifo blocks
+        let blocks = match free_clusters.get_blocks::<T>() {
+            Some(b) => b,
+            None => {
+                // either return something like the first cluster of the file, the entire chain, or just a false
+                todo!()
+            }
+        };
+
+        // add to files (the first block)
+        self.files.push(*blocks.first().unwrap());
+
+        // write to the clusters (you'll actually need a reference or pointer to the partition)
+        for i in 0..blocks_needed {
+            // write the next data block to the cluster (sector) offset
+            // NOTE: use a reference to the Writer. With an offset and size (given you know where the cluster data area is. Maybe pass that offset here)
+        }
+    }
+
+    // the size is implict to the data as we're just passing a str (u8) slice
+    // convert [u8] to str with from_utf8. Note cant write to a negative offset. You should pass an offset at the start of the possible write area like the start of the free cluster area
+    pub fn write_to_file<W: core::fmt::Write>(&mut self, write_to: W, data: &str, offset: usize) {
+        //
+    }
+
+    // remove a file
 }
 
 // NOTE: the clusters shouldnt be mapped to memory if you dont need to
@@ -279,8 +367,6 @@ impl<const T: usize> FreeCluster<T> {
 // All it does is take all the clusters of the file and applies the compression to it. Then deletes the old data and writes the new compressed data
 // BY default, the compression is balanced between speed (-7 min) and size (22 max)
 
-pub const Z_STD_COMPRESSION_LEVEL: u8 = 15; 
-
 // basically just a chunk of memory byte-address accessible
 #[repr(C)]
 pub struct Cluster4K {
@@ -289,7 +375,7 @@ pub struct Cluster4K {
 
 #[repr(C)]
 pub struct ClusterArea<const T: usize> {
-    clusters: [Cluster4K; T]
+    clusters: [Cluster4K; T],
 }
 
 // ------------
@@ -385,7 +471,7 @@ pub struct QFS<const T: usize> {
     // FAT
     fat: FAT<T>,
     // LIFO
-    free_fat: FreeCluster<T>, // clusters
+    free_fat: FreeClusters<T>, // clusters
 }
 
 // Starts from / and builds the fs tree into a relevant user API in memory struct tree + any extra attributes as configured with /config/permissions.yml for each file
