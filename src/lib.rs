@@ -259,6 +259,7 @@ impl FATEntry {
 // as long as alloc exists
 
 #[repr(C)]
+#[derive(Debug)]
 pub struct FAT<const T: usize> {
     entries: [u64; T],
 }
@@ -311,6 +312,7 @@ impl<const T: usize> FreeClusters<T> {
 // Though it does need to be changed on the fly.. Maybe just place these in the std part
 #[repr(C)]
 pub struct DirData {
+    // if on disk, dont overread n_files worth of data
     n_files: u64,
     files: Vec<u64>,
 }
@@ -345,45 +347,10 @@ impl DirData {
 
         // add to files (the first block)
         self.files.push(*blocks.first().unwrap());
-
-        // write to the clusters (you'll actually need a reference or pointer to the partition)
-        for i in 0..blocks_needed {
-            // why is it a mut 64
-            let mut block_to_write = &data[i..4096 * (i + 1)];
-
-            // the address pointed to the start + offset
-            unsafe {
-                // write_to is a 64bit memory address of the in memory file or the on disk file
-                let write_to = write_to.offset(cluster_data_offset);
-
-                // let src = block_to_write.as_mut_ptr();
-
-                // why a pointer to a u64 for the source?
-                // maybe Im not understanding it
-
-                // write_to.copy_from(src, block_to_write.len());
-            }
-
-            // writes to disk
-            // maybe just copy_from_slice
-
-            // self.write_to_file(write_to, block_to_write.as_mut_ptr());
-
-            // write the next data block to the cluster (sector) offset
-            // NOTE: use a reference to the Writer. With an offset and size (given you know where the cluster data area is. Maybe pass that offset here)
-        }
     }
 
     // option 1: wrap the disk in a Writer and just use &str (I like this idea)
     // option 2: treat the disk as a file. And just manually seek it and write to it
-
-    // the size is implict to the data as we're just passing a str (u8) slice
-    // convert [u8] to str with from_utf8. Note cant write to a negative offset. You should pass an offset at the start of the possible write area like the start of the free cluster area
-    pub fn write_to_file(&mut self, write_to: *mut u64, data: *mut u8) {
-        unsafe {
-            // write_bytes(write_to, data, count);
-        }
-    }
 
     // remove a file
 }
@@ -505,9 +472,25 @@ pub struct QFS<const T: usize> {
 }
 
 // Starts from / and builds the fs tree into a relevant user API in memory struct tree + any extra attributes as configured with /config/permissions.yml for each file
-fn walk_fs() {}
+// * Just make the thing
+// fn walk_fs<const T: usize>() -> QFS<T> {}
 
+/// pretty print the entire fs tree (built by walk_fs)
 fn print_fs() {}
+
+// WRITE METHODS AND SEMANTICS:
+// always write to memory first (will need alloc)
+// then flush that to disk (the cache). I think we can use diff files
+// then flush to the actual data area
+
+// assuming that the ssd uses pcie (NVMe)
+// it will be a PCI BAR which you can prob write to through MMIO API. The MMIO API is basically a BUS driver that queues requests to the device and writes to the address at a good time
+// for in memory and and virtual files, just use std::fs::write through the OS
+
+// WRITE TO DISK OR SOMETHING
+fn write_to_disk() {
+    // write to the clusters (you'll actually need a reference or pointer to the partition)
+}
 
 // --------------
 // TESTS

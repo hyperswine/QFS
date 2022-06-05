@@ -1,4 +1,4 @@
-use quickfs::{bytes_to_str, bytes_to_type, to_bytes, Header, CLUSTER_SIZE_L16TB};
+use quickfs::{to_bytes, Header, CLUSTER_SIZE_L16TB, bytes_to_type};
 use std::{env, fs::File, io::Read};
 
 fn main() {
